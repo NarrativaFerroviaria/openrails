@@ -128,7 +128,7 @@ namespace Orts.Viewer3D.RollingStock
             { binding.Warn(local, FlexibleConnectionHookWarning.MixedFamilies, "Hook/Hose families cannot be connected"); return false; }
             var config = mapping.Point.Profile.Hook;
             if (!config.CanPublish)
-            { binding.Warn(local, FlexibleConnectionHookWarning.MissingPublisherData, "publisher needs Links, LinkShape and HookShape; receiver-only Profile cannot publish"); return false; }
+            { binding.Warn(local, FlexibleConnectionHookWarning.MissingPublisherData, "publisher lacks geometry required by its ChainLayout; receiver-only Profile cannot publish (see profile configuration warnings)"); return false; }
 
             // Same tile convention as the frozen Hose path. SharedShape applies
             // the camera offset later; it must not be applied twice here.
@@ -147,13 +147,17 @@ namespace Orts.Viewer3D.RollingStock
             FlexibleConnectionHookResource[] resources;
             if (!ProfileResources.TryGetValue(mapping.Point.Profile, out resources))
             {
-                resources = new[] { Manager.Request(Owner, config.LinkShape.FileName), Manager.Request(Owner, config.HookShape.FileName) };
+                // ORTS Flexible Connections
+                // Purpose: Layout 1 never requests or waits for an unused Hook resource.
+                resources = config.ChainLayout == 1 ?
+                    new[] { Manager.Request(Owner, config.LinkShape.FileName) } :
+                    new[] { Manager.Request(Owner, config.LinkShape.FileName), Manager.Request(Owner, config.HookShape.FileName) };
                 ProfileResources.Add(mapping.Point.Profile, resources);
             }
             SharedShape link, hook;
-            if (!Manager.TryGet(resources[0], out link) || !Manager.TryGet(resources[1], out hook))
+            if (!Manager.TryGet(resources[0], out link) || (config.ChainLayout != 1 && !Manager.TryGet(resources[1], out hook)))
             {
-                if (Manager.Failed(resources[0]) || Manager.Failed(resources[1]))
+                if (Manager.Failed(resources[0]) || (config.ChainLayout != 1 && Manager.Failed(resources[1])))
                     binding.Warn(local, FlexibleConnectionHookWarning.Resource, "required publisher shape is unusable");
                 return false;
             }
@@ -187,8 +191,10 @@ namespace Orts.Viewer3D.RollingStock
             Vector3 previousEnd = a;
             for (int i = 0; i < count; i++)
             {
-                var shapeConfig = i == count / 2 ? config.HookShape : config.LinkShape;
-                var resource = resources[i == count / 2 ? 1 : 0];
+                // ORTS Flexible Connections
+                // Purpose: Use the same piece sequence as geometry, including effective P2-to-P1 traversal.
+                var piece = config.GetPiece(i);
+                var resource = resources[piece.IsHook ? 1 : 0];
                 Vector3 start = WorldJoint(a, hx, hz, Joints[i]);
                 Vector3 finish = WorldJoint(a, hx, hz, Joints[i + 1]);
                 // Direction is computed from relative joints, not a subtraction
@@ -197,10 +203,10 @@ namespace Orts.Viewer3D.RollingStock
                 var direction = new Vector3((float)(hx * sx), (float)sy, (float)(hz * sx));
                 Matrix placement;
                 // ORTS Flexible Connections
-                // Purpose: Apply ChainParity to every Hook piece, including the central HookShape.
-                if (!TryPlacement(shapeConfig, start, finish, direction, normal, ((i + config.ChainParity) & 1) != 0, out placement))
+                // Purpose: Apply ChainParity to every Hook piece, including both layout-3 Hooks.
+                if (!TryPlacement(piece, start, finish, direction, normal, ((i + config.ChainParity) & 1) != 0, out placement))
                 { binding.Warn(local, FlexibleConnectionHookWarning.Placement, "rigid placement or endpoint closure is invalid"); return false; }
-                Vector3 p1 = shapeConfig.P1, p2 = shapeConfig.P2;
+                Vector3 p1 = piece.Entry, p2 = piece.Exit;
                 p1.Z = -p1.Z; p2.Z = -p2.Z;
                 // Check adjacent represented endpoints directly, not just each
                 // endpoint against its ideal joint (which could double the gap).
@@ -292,12 +298,12 @@ namespace Orts.Viewer3D.RollingStock
         private static Matrix Basis(Vector3 x, Vector3 y, Vector3 z)
         { return new Matrix(x.X, x.Y, x.Z, 0, y.X, y.Y, y.Z, 0, z.X, z.Y, z.Z, 0, 0, 0, 0, 1); }
 
-        private static bool TryPlacement(FlexibleConnectionHookShapeConfig config, Vector3 start, Vector3 finish,
+        private static bool TryPlacement(FlexibleConnectionHookPiece piece, Vector3 start, Vector3 finish,
             Vector3 direction, Vector3 normal, bool quarterTurn, out Matrix placement)
         {
             // ORTS Flexible Connections
-            // Purpose: Hook retains its metadata, tolerance, normal and quarter-turn policy.
-            return TryRigidPlacement(config.P1, config.P2, start, finish, direction, normal, quarterTurn,
+            // Purpose: Map effective entry/exit without changing canonical asset points or shared placement.
+            return TryRigidPlacement(piece.Entry, piece.Exit, start, finish, direction, normal, quarterTurn,
                 FlexibleConnectionHookConstants.GeometryTolerance, out placement);
         }
 
