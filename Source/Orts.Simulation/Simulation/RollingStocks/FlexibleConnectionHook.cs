@@ -43,19 +43,47 @@ namespace Orts.Simulation.RollingStocks
         }
     }
 
+    // ORTS Flexible Connections
+    // Purpose: Share asset selection and effective traversal between geometry and rendering.
+    public struct FlexibleConnectionHookPiece
+    {
+        public readonly FlexibleConnectionHookShapeConfig Shape;
+        public readonly bool IsHook, Reversed;
+        public Vector3 Entry { get { return Reversed ? Shape.P2 : Shape.P1; } }
+        public Vector3 Exit { get { return Reversed ? Shape.P1 : Shape.P2; } }
+
+        internal FlexibleConnectionHookPiece(FlexibleConnectionHookShapeConfig shape, bool isHook, bool reversed)
+        { Shape = shape; IsHook = isHook; Reversed = reversed; }
+    }
+
     public sealed class FlexibleConnectionHookConfig
     {
         // ORTS Flexible Connections
         // Purpose: Store the Hook sequence roll phase; zero preserves existing alternation.
         public readonly int ChainParity;
+        // ORTS Flexible Connections
+        // Purpose: Retain the effective layout; absence is resolved to layout 3 by the parser.
+        public readonly int ChainLayout;
         public readonly int? Links;
         public readonly FlexibleConnectionHookShapeConfig LinkShape, HookShape;
-        public bool CanPublish { get { return Links.HasValue && LinkShape != null && HookShape != null; } }
+        public bool CanPublish { get { return Links.HasValue && LinkShape != null && (ChainLayout == 1 || HookShape != null); } }
 
         // ORTS Flexible Connections
-        // Purpose: Retain the validated ChainParity with the immutable Hook configuration.
-        internal FlexibleConnectionHookConfig(int? links, FlexibleConnectionHookShapeConfig link, FlexibleConnectionHookShapeConfig hook, int chainParity)
-        { Links = links; LinkShape = link; HookShape = hook; ChainParity = chainParity; }
+        // Purpose: Define the entire sequence once; odd layout-3 counts favor the publisher.
+        // Callers use this only for a publishable configuration and an index in 0..Links-1.
+        public FlexibleConnectionHookPiece GetPiece(int index)
+        {
+            int firstHook = (Links.Value - 1) / 2;
+            bool isHook = ChainLayout == 2 ? index == Links.Value - 1 :
+                ChainLayout == 3 && (index == firstHook || index == firstHook + 1);
+            bool reversed = ChainLayout == 3 && index == firstHook + 1;
+            return new FlexibleConnectionHookPiece(isHook ? HookShape : LinkShape, isHook, reversed);
+        }
+
+        // ORTS Flexible Connections
+        // Purpose: Retain the validated roll phase and effective layout with the Hook configuration.
+        internal FlexibleConnectionHookConfig(int? links, FlexibleConnectionHookShapeConfig link, FlexibleConnectionHookShapeConfig hook, int chainParity, int chainLayout)
+        { Links = links; LinkShape = link; HookShape = hook; ChainParity = chainParity; ChainLayout = chainLayout; }
     }
 
     // ---------------------------------------------------------------------
@@ -71,12 +99,15 @@ namespace Orts.Simulation.RollingStocks
         // Purpose: Default absent ChainParity to the existing zero-phase alternation.
         private int ChainParity = 0;
         // ORTS Flexible Connections
+        // Purpose: Default only absent layouts; explicit invalid declarations remain rejected.
+        private int ChainLayout = 3;
+        // ORTS Flexible Connections
         // Purpose: Share strict Links syntax; defer its range until the profile family is known.
         internal int? Links { get; private set; }
         internal bool HasInvalidData { get { return Invalid; } }
         // ORTS Flexible Connections
-        // Purpose: Include ChainParity in Hook exclusivity, including Coupler family validation.
-        internal bool HasHookDeclarations { get { return Seen.Contains("IsHook") || Seen.Contains("LinkShape") || Seen.Contains("HookShape") || Seen.Contains("ChainParity"); } }
+        // Purpose: Include explicit ChainParity and ChainLayout in Hook/Coupler family exclusivity.
+        internal bool HasHookDeclarations { get { return Seen.Contains("IsHook") || Seen.Contains("LinkShape") || Seen.Contains("HookShape") || Seen.Contains("ChainParity") || Seen.Contains("ChainLayout"); } }
         private FlexibleConnectionHookShapeConfig Link, Hook;
 
         internal void Read(STFReader stf, string token, string profile)
@@ -85,8 +116,15 @@ namespace Orts.Simulation.RollingStocks
             List<string> items;
             bool valid = ReadBlock(stf, out items);
             // ORTS Flexible Connections
-            // Purpose: Accept one integer 0 or 1 only; retain existing sticky invalid/duplicate handling.
-            if (token == "ChainParity")
+            // Purpose: Read layout/parity as strict integers; keep invalid or duplicate declarations rejected.
+            if (token == "ChainLayout")
+            {
+                int value = 0;
+                valid = valid && items.Count == 1 && int.TryParse(items[0], NumberStyles.AllowLeadingSign,
+                    CultureInfo.InvariantCulture, out value) && value >= 1 && value <= 3;
+                if (valid) ChainLayout = value;
+            }
+            else if (token == "ChainParity")
             {
                 int value = 0;
                 valid = valid && items.Count == 1 && int.TryParse(items[0], NumberStyles.AllowLeadingSign,
@@ -136,8 +174,8 @@ namespace Orts.Simulation.RollingStocks
                 STFException.TraceWarning(stf, "Hook Profile '" + profile + "': duplicate or invalid Links. Profile rejected.");
             }
             // ORTS Flexible Connections
-            // Purpose: Reject ChainParity on profiles that do not activate Hook.
-            bool hookFields = Seen.Contains("Links") || Seen.Contains("LinkShape") || Seen.Contains("HookShape") || Seen.Contains("ChainParity");
+            // Purpose: Reject explicit Hook properties on profiles that do not activate Hook.
+            bool hookFields = Seen.Contains("Links") || Seen.Contains("LinkShape") || Seen.Contains("HookShape") || Seen.Contains("ChainParity") || Seen.Contains("ChainLayout");
             if ((IsHook == 1 && hasHoseTokens) || (IsHook != 1 && hookFields))
             {
                 Invalid = true;
@@ -146,7 +184,21 @@ namespace Orts.Simulation.RollingStocks
             if (Invalid) return false;
             // ORTS Flexible Connections
             // Purpose: Publish the validated roll phase without changing Hook geometry inputs.
-            if (IsHook == 1) hook = new FlexibleConnectionHookConfig(Links, Link, Hook, ChainParity);
+            if (IsHook == 1)
+            {
+                hook = new FlexibleConnectionHookConfig(Links, Link, Hook, ChainParity, ChainLayout);
+                // ORTS Flexible Connections
+                // Purpose: Diagnose incomplete receiver-only profiles once during configuration loading.
+                var missing = new List<string>();
+                if (!Links.HasValue) missing.Add("Links");
+                if (Link == null) missing.Add("LinkShape");
+                if (ChainLayout != 1 && Hook == null) missing.Add("HookShape");
+                if (missing.Count != 0)
+                    STFException.TraceWarning(stf, "Hook Profile '" + profile + "': missing " + string.Join(", ", missing) +
+                        "; valid as remote, but cannot publish geometry.");
+                if (ChainLayout == 1 && Hook != null)
+                    STFException.TraceWarning(stf, "Hook Profile '" + profile + "': HookShape is not used in ChainLayout 1.");
+            }
             return true;
         }
 
@@ -268,7 +320,7 @@ namespace Orts.Simulation.RollingStocks
             double largest = 0;
             for (int i = n - 1; i >= 0; i--)
             {
-                double length = i == n / 2 ? config.HookShape.Length : config.LinkShape.Length;
+                double length = config.GetPiece(i).Shape.Length;
                 if (!Finite(length) || length <= 0) return FlexibleConnectionHookGeometryStatus.InvalidInput;
                 lengths[i] = length;
                 largest = Math.Max(largest, length);

@@ -151,6 +151,9 @@ namespace Orts.Simulation.RollingStocks
                 new STFReader.TokenProcessor("notcoupledshape", () => couplerParser.RejectPointProperty(stf, name)),
                 // ORTS Flexible Connections
                 // Purpose: Delegate strict, Hook-only ChainParity parsing.
+                // ORTS Flexible Connections
+                // Purpose: Delegate optional, strictly validated Hook layout selection.
+                new STFReader.TokenProcessor("chainlayout", () => hookParser.Read(stf, "ChainLayout", name)),
                 new STFReader.TokenProcessor("chainparity", () => hookParser.Read(stf, "ChainParity", name)),
                 new STFReader.TokenProcessor("ishook", () => hookParser.Read(stf, "IsHook", name)),
                 new STFReader.TokenProcessor("links", () => hookParser.Read(stf, "Links", name)),
