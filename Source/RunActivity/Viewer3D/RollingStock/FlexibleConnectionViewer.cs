@@ -1,6 +1,6 @@
 ﻿// ORTS Flexible Connections
 //
-// Purpose: Coordinate Hose, Hook and Coupler visuals for one vehicle.
+// Purpose: Coordinate Hose, Hook, Coupler and Bellows visuals for one vehicle.
 // Responsibilities: Select publishing Cases, resolve local/remote profiles, track point
 //   occupancy, and build continuous Hose meshes with two material ranges and local Halves.
 // Key components: FlexibleConnectionViewer delegates rigid families; FlexibleConnectionLifetime
@@ -34,6 +34,10 @@ namespace Orts.Viewer3D.RollingStock
         // ORTS Flexible Connections
         // Purpose: Keep Hook visuals and mixed-family diagnostics outside the Hose path.
         private readonly FlexibleConnectionHookViewer HookViewer;
+        // ORTS Flexible Connections V5
+        // Purpose: Keep Bellows geometry and resources outside all existing family paths.
+        private readonly FlexibleConnectionBellowViewer BellowViewer;
+        private readonly HashSet<FlexibleConnectionMapping> BellowMismatchWarnings = new HashSet<FlexibleConnectionMapping>();
         // ORTS Flexible Connections
         // Purpose: Keep the new visual family and its stable mismatch warnings outside Hook/Hose.
         private readonly FlexibleConnectionCouplerViewer CouplerViewer;
@@ -58,6 +62,9 @@ namespace Orts.Viewer3D.RollingStock
         {
             ConnectedFront.Clear();
             ConnectedRear.Clear();
+            // ORTS Flexible Connections V5
+            // Purpose: Discard Bellows orientation history after a gap in publication.
+            BellowViewer?.BeginFrame();
             // ORTS Flexible Connections
             // Purpose: Reset only local successful-publication state; occupancy marks retain their existing semantics.
             CouplerViewer?.ResetPublication();
@@ -114,22 +121,28 @@ namespace Orts.Viewer3D.RollingStock
             // ORTS Flexible Connections
             // Purpose: Classify once; Hook-only vehicles allocate no Hose resources.
             // =====================================================================
-            // Purpose: Classify all three families before allocating any Hose resources.
-            bool hasHook = false, hasCoupler = false, hasHose = false;
+            // ORTS Flexible Connections V5
+            // Purpose: Classify all four families before allocating any Hose resources.
+            bool hasHook = false, hasCoupler = false, hasHose = false, hasBellow = false;
             foreach (var point in configuration.FrontConnectionPoints.Values)
             {
                 hasHook |= point.Profile.Family == FlexibleConnectionFamily.Hook;
                 hasCoupler |= point.Profile.Family == FlexibleConnectionFamily.Coupler;
                 hasHose |= point.Profile.Family == FlexibleConnectionFamily.Hose;
+                hasBellow |= point.Profile.Family == FlexibleConnectionFamily.Bellows;
             }
             foreach (var point in configuration.RearConnectionPoints.Values)
             {
                 hasHook |= point.Profile.Family == FlexibleConnectionFamily.Hook;
                 hasCoupler |= point.Profile.Family == FlexibleConnectionFamily.Coupler;
                 hasHose |= point.Profile.Family == FlexibleConnectionFamily.Hose;
+                hasBellow |= point.Profile.Family == FlexibleConnectionFamily.Bellows;
             }
             if (hasHook) HookViewer = new FlexibleConnectionHookViewer(viewer, configuration, wagonFolder);
             if (hasCoupler) CouplerViewer = new FlexibleConnectionCouplerViewer(viewer, configuration, wagonFolder);
+            // ORTS Flexible Connections V5
+            // Purpose: Bellows-only vehicles need no Hose buffers or catenary state.
+            if (hasBellow) BellowViewer = new FlexibleConnectionBellowViewer(viewer, configuration, wagonFolder);
             if (!hasHose) return;
             CatenaryResult = new FlexibleConnectionCatenaryResult();
             CatenaryPoints = new Vector3[segments + 1];
@@ -166,6 +179,16 @@ namespace Orts.Viewer3D.RollingStock
                 remote.FlexibleConnections.GetConnectionPoints(remoteEnd).TryGetValue(mapping.RemotePoint, out point);
             // ORTS Flexible Connections
             // Purpose: Reuse the native dispatch contract; a failed/mixed Coupler never falls through to Hose.
+            // ORTS Flexible Connections V5
+            // Purpose: Handle Bellows and mixed-family failures without falling through to Hose.
+            bool localBellow = mapping.Point.Profile.Bellow != null;
+            if (localBellow || (point != null && point.Profile.Bellow != null))
+            {
+                if (localBellow) published = BellowViewer.PrepareConnected(frame, mapping, local, remote, point);
+                else if (BellowMismatchWarnings.Add(mapping))
+                    Trace.TraceWarning("Flexible connection {0}:{1}: Bellows requires Bellows at both ends; not rendered.", mapping.Point.End, mapping.LocalPoint);
+                return true;
+            }
             bool localCoupler = mapping.Point.Profile.Family == FlexibleConnectionFamily.Coupler;
             bool remoteCoupler = point != null && point.Profile.Family == FlexibleConnectionFamily.Coupler;
             if (localCoupler || remoteCoupler)
@@ -287,9 +310,12 @@ namespace Orts.Viewer3D.RollingStock
             return result;
         }
 
+        // ORTS Flexible Connections V5
+        // Purpose: Share only native material resolution, preserving the Hose caller and fallback.
         internal Material LoadProfileMaterial(FlexibleConnectionLocalProfile profile, string wagonFolder)
+        { return LoadConnectionMaterial(Viewer, profile.Name, profile.TextureName, wagonFolder, FallbackMaterial); }
+        internal static Material LoadConnectionMaterial(Viewer Viewer, string profileName, string textureName, string wagonFolder, Material FallbackMaterial)
         {
-            string textureName = profile.TextureName;
             string texturePath = null;
             string failure;
 
@@ -358,7 +384,7 @@ namespace Orts.Viewer3D.RollingStock
 
             Trace.TraceWarning(
                 "Owner folder '{0}', LocalProfile '{1}', Texture '{2}': {3}. Using yellow fallback.",
-                wagonFolder, profile.Name,
+                wagonFolder, profileName,
                 texturePath ?? textureName ?? "(unspecified)", failure);
             return FallbackMaterial;
         }
@@ -420,7 +446,9 @@ namespace Orts.Viewer3D.RollingStock
         // Purpose: Request retirement for Hose, Hook and Coupler owners; rigid-only viewers
         // have no Hose lifetime. Existing frame references protect pending render work.
         // Coupler uses the same rigid-resource manager as Hook, with its own owner.
-        internal void RequestRetirement() { Lifetime?.RequestRetirement(); HookViewer?.RequestRetirement(); CouplerViewer?.RequestRetirement(); }
+        // ORTS Flexible Connections V5
+        // Purpose: Retire Bellows publication while retaining resources referenced by pending frames.
+        internal void RequestRetirement() { BellowViewer?.Retire(); Lifetime?.RequestRetirement(); HookViewer?.RequestRetirement(); CouplerViewer?.RequestRetirement(); }
         internal void Mark()
         {
             // ORTS Flexible Connections
@@ -1780,6 +1808,9 @@ namespace Orts.Viewer3D.RollingStock
         // Purpose: Service Hook and Coupler owners through the shared rigid-resource manager
         // in FlexibleConnectionHookViewer.cs, independently of procedural Hose GPU resources.
         internal readonly FlexibleConnectionHookResourceManager Hooks = new FlexibleConnectionHookResourceManager();
+        // ORTS Flexible Connections V5
+        // Purpose: Delegate procedural Bellows lifecycle without altering Hose/rigid owners.
+        internal readonly FlexibleConnectionBellowManager Bellows = new FlexibleConnectionBellowManager();
         private readonly object Gate = new object();
         private readonly List<FlexibleConnectionLifetime> Owners =
             new List<FlexibleConnectionLifetime>();
@@ -1862,6 +1893,9 @@ namespace Orts.Viewer3D.RollingStock
         {
             // ORTS Flexible Connections
             // Purpose: Mark outside the Hose lock; retain Hook and Coupler assets used by pending frames.
+            // ORTS Flexible Connections V5
+            // Purpose: Keep Bellows materials reachable through pending render frames.
+            Bellows.Mark();
             Hooks.Mark();
             lock (Gate)
                 foreach (var owner in Owners)
@@ -2003,6 +2037,9 @@ namespace Orts.Viewer3D.RollingStock
         // Render only. No lock is held across GPU resource operations.
         internal void ProcessPending(GraphicsDevice graphicsDevice)
         {
+            // ORTS Flexible Connections V5
+            // Purpose: Service Bellows even when there are no Hose owners.
+            Bellows.ProcessPending(graphicsDevice);
             while (true)
             {
                 FlexibleConnectionLifetime pending = null;
@@ -2083,6 +2120,9 @@ namespace Orts.Viewer3D.RollingStock
 
             // ORTS Flexible Connections
             // Purpose: Close Hook and Coupler admission before any empty-Hose early return.
+            // ORTS Flexible Connections V5
+            // Purpose: Close Bellows admission and dispose its GPU resources on Render shutdown.
+            Bellows.Close();
             Hooks.Close();
             while (true)
             {

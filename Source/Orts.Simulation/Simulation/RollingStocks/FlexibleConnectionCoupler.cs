@@ -16,7 +16,9 @@ using Orts.Parsers.Msts;
 
 namespace Orts.Simulation.RollingStocks
 {
-    public enum FlexibleConnectionFamily { Hose, Hook, Coupler }
+    // ORTS Flexible Connections V5
+    // Purpose: Extend shared family identity without changing Coupler geometry.
+    public enum FlexibleConnectionFamily { Hose, Hook, Coupler, Bellows }
 
     public static class FlexibleConnectionCouplerConstants
     {
@@ -45,6 +47,9 @@ namespace Orts.Simulation.RollingStocks
 
     internal sealed class FlexibleConnectionCouplerParser
     {
+        // ORTS Flexible Connections V5
+        // Purpose: Expose only declaration presence for Bellows family exclusion.
+        internal bool HasDeclarations { get { return Seen.Count != 0 || Invalid; } }
         private readonly HashSet<string> Seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private bool Invalid;
         private int IsCoupler;

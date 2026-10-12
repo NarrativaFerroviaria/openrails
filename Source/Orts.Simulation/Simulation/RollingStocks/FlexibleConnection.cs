@@ -139,6 +139,9 @@ namespace Orts.Simulation.RollingStocks
             // ORTS Flexible Connections
             // Purpose: Classify only after reading all properties, independently of token order.
             var hookParser = new FlexibleConnectionHookParser();
+            // ORTS Flexible Connections V5
+            // Purpose: Parse Bellows independently and resolve exclusive family membership.
+            var bellowParser = new FlexibleConnectionBellowParser();
             // ORTS Flexible Connections
             // Purpose: Delegate the exclusive family and ordered rigid assets to their own parser.
             var couplerParser = new FlexibleConnectionCouplerParser();
@@ -146,6 +149,10 @@ namespace Orts.Simulation.RollingStocks
                 // ORTS Flexible Connections
                 // Purpose: Delegate strict Hook blocks without changing Hose readers or duplicates.
                 // Purpose: Keep Coupler parsing segregated; Links is classified after all properties.
+                // ORTS Flexible Connections V5
+                // Purpose: Delegate Bellows-only properties to its strict profile parser.
+                new STFReader.TokenProcessor("isbellow", () => bellowParser.Read(stf, "IsBellow", name)),
+                new STFReader.TokenProcessor("bellowgeometry", () => bellowParser.Read(stf, "BellowGeometry", name)),
                 new STFReader.TokenProcessor("iscoupler", () => couplerParser.Read(stf, "IsCoupler", name)),
                 new STFReader.TokenProcessor("couplershapes", () => couplerParser.Read(stf, "CouplerShapes", name)),
                 new STFReader.TokenProcessor("notcoupledshape", () => couplerParser.RejectPointProperty(stf, name)),
@@ -171,6 +178,19 @@ namespace Orts.Simulation.RollingStocks
             // Purpose: Keep receiver-only Hook profiles valid; Hose retains its validation.
             // =====================================================================
             // Purpose: Resolve family before Links range; never send a Coupler into Hose validation.
+            // ORTS Flexible Connections V5
+            // Purpose: Bellows never enters Hose validation; explicit malformed geometry is not receiver-only.
+            if (bellowParser.Declared)
+            {
+                var bellows = bellowParser.Resolve(stf, name, seen.Count != 0 || hookParser.HasHookDeclarations || hookParser.Links.HasValue || hookParser.HasInvalidData || couplerParser.HasDeclarations);
+                if (LocalProfiles.ContainsKey(name))
+                {
+                    STFException.TraceWarning(stf, "Duplicate LocalProfile '" + name + "'. This profile identity is invalid.");
+                    bellows = null;
+                }
+                LocalProfiles[name] = bellows == null ? null : new FlexibleConnectionLocalProfile(name, bellows);
+                return;
+            }
             FlexibleConnectionHookConfig hook = null;
             FlexibleConnectionCouplerConfig coupler;
             bool familyValid = couplerParser.Resolve(stf, name, hookParser, seen.Count != 0, out coupler);
@@ -264,7 +284,9 @@ namespace Orts.Simulation.RollingStocks
                                 point.Profile = stf.ReadStringBlock(string.Empty);
                             })
                         };
-                        foreach (string name in new[] { "type", "length", "radius", "texture", "fittinglength", "fittingradius", "fittingextrude", "fallangle" })
+                        // ORTS Flexible Connections V5
+                        // Purpose: Reject Bellows geometry/activation overrides on individual points.
+                        foreach (string name in new[] { "type", "length", "radius", "texture", "fittinglength", "fittingradius", "fittingextrude", "fallangle", "isbellow", "bellowgeometry" })
                         {
                             string token = name;
                             processors.Add(new STFReader.TokenProcessor(token, () => {
@@ -608,11 +630,16 @@ namespace Orts.Simulation.RollingStocks
     {
         // ORTS Flexible Connections
         // Purpose: Optional Hook configuration is the family discriminator; Hose constructor is preserved.
+        // ORTS Flexible Connections V5
+        // Purpose: Bellows profiles retain their own geometry and family identity.
+        public readonly FlexibleConnectionBellowConfig Bellow;
+        public FlexibleConnectionLocalProfile(string name, FlexibleConnectionBellowConfig bellow)
+        { Name = name; Bellow = bellow; }
         public readonly FlexibleConnectionHookConfig Hook;
         // ORTS Flexible Connections
         // Purpose: Explicit family identity keeps rigid Coupler profiles out of all Hose resource paths.
         public readonly FlexibleConnectionCouplerConfig Coupler;
-        public FlexibleConnectionFamily Family { get { return Coupler != null ? FlexibleConnectionFamily.Coupler :
+        public FlexibleConnectionFamily Family { get { return Bellow != null ? FlexibleConnectionFamily.Bellows : Coupler != null ? FlexibleConnectionFamily.Coupler :
             Hook != null ? FlexibleConnectionFamily.Hook : FlexibleConnectionFamily.Hose; } }
         public FlexibleConnectionLocalProfile(string name, FlexibleConnectionCouplerConfig coupler)
         { Name = name; Coupler = coupler; }

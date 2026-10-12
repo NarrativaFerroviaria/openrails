@@ -419,6 +419,26 @@ namespace Orts.Viewer3D
                 reference.Release(this);
             }
         }
+        // =====================================================================
+        // ORTS Flexible Connections V5
+        // Purpose: Retain sealed Bellows snapshots until all frame render items are cleared.
+        // =====================================================================
+        private RollingStock.FlexibleConnectionBellowSnapshot FlexibleConnectionBellowSnapshots;
+        internal void RegisterFlexibleConnectionBellowSnapshot(RollingStock.FlexibleConnectionBellowSnapshot snapshot)
+        {
+            snapshot.Next = FlexibleConnectionBellowSnapshots;
+            FlexibleConnectionBellowSnapshots = snapshot;
+        }
+        private void ReleaseFlexibleConnectionBellowSnapshots()
+        {
+            while (FlexibleConnectionBellowSnapshots != null)
+            {
+                var snapshot = FlexibleConnectionBellowSnapshots;
+                FlexibleConnectionBellowSnapshots = snapshot.Next;
+                snapshot.Release(this);
+            }
+        }
+        // End ORTS Flexible Connections V5 Bellows frame references.
         // End ORTS Flexible Connections frame references.
 
         readonly Game Game;
@@ -552,6 +572,9 @@ namespace Orts.Viewer3D
             // Purpose: Release rigid-owner references after clearing all render items; shared native
             // shape resources remain governed by the resource manager and normal marking/sweeping.
             ReleaseFlexibleConnectionHookReferences();
+            // ORTS Flexible Connections V5
+            // Purpose: Release Bellows only after this frame no longer references its primitives.
+            ReleaseFlexibleConnectionBellowSnapshots();
         }
 
         public void PrepareFrame(Viewer viewer)
